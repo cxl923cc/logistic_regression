@@ -62,7 +62,11 @@ def num_fc(s_num, bin_num_fineclass = 20):
 
         unique_intervals = s_interval.unique().sort_values()
         num_bin_edges_fc = np.append(unique_intervals.map(lambda x: x.left).astype(float).min(), unique_intervals.map(lambda x: x.right).astype(float))
-
+        
+        #avoid min or max missed out from data due to truncation to 4 digit float format
+        num_bin_edges_fc[0] = np.minimum(np.min(s_num), num_bin_edges_fc[0])
+        num_bin_edges_fc[-1] = np.maximum(np.max(s_num), num_bin_edges_fc[-1])
+        
     return s_num_fc, num_bin_edges_fc
 
 # Fineclass for s_cat   s_cat -> <cat_fineclass> -> s_cat_cc and cat_bin_values_fc
@@ -118,20 +122,29 @@ def bin_woe_iv(s, target, desc = 'Fineclass'):
     eval_df_summary['logodds'] = np.log(eval_df_summary['N_good']/eval_df_summary['N_bad']).replace(np.inf, np.nan)
     eval_df_summary['p_bad'] = (eval_df_summary['N_bad']/eval_df_summary['N_count']).replace(np.inf, np.nan)
     eval_df_summary['iv'] = (eval_df_summary['dist_good']-eval_df_summary['dist_bad'])*eval_df_summary['woe']
+    
+    s_total = eval_df_summary.sum().drop(['feat_num_index', 'woe', 'logodds', 'p_bad'])
+    s_total.iloc[0] = 'Total'
+    
+    eval_df_summary = eval_df_summary.append(s_total, ignore_index = True)
+    eval_df_summary['var'] = s.name
+    eval_df_summary['desc'] = desc
+    
     print(desc)
     print('IV is ' + str(eval_df_summary['iv'].sum()))
-    if eval_df_summary['N_count'].sum()==((target==0)|(target==1)).sum():
-        print('total number of rows match')
-    else:
-        print('total number of rows DOES NOT match')
-
-    plt.plot(eval_df_summary['woe'], label='woe', marker = '.')
+#     if eval_df_summary['N_count'].sum()==((target==0)|(target==1)).sum():
+#         print('total number of rows match')
+#     else:
+#         print('total number of rows DOES NOT match')
+    
+    eval_df_summary_forplot = eval_df_summary.loc[eval_df_summary['feat']!='Total']
+    plt.plot(eval_df_summary_forplot['woe'], label='woe', marker = '.')
     plt.title(s.name + ' woe')
-    plt.xticks(ticks = eval_df_summary.index.values, labels=eval_df_summary['feat'].values)
+    plt.xticks(ticks = eval_df_summary_forplot.index.values, labels=eval_df_summary_forplot['feat'].values)
     plt.xticks(rotation=60)
     plt.legend(loc='upper left')
     plt.twinx()
-    plt.bar(eval_df_summary.index, eval_df_summary['bin_count_perc'], alpha=0.1, label='bin_vol%')
+    plt.bar(eval_df_summary_forplot.index, eval_df_summary_forplot['bin_count_perc'], alpha=0.1, label='bin_vol%')
     plt.legend(loc='upper right')
     plt.show()
     return eval_df_summary
@@ -159,6 +172,10 @@ def num_cc_edges_nonzerobad(s_num, num_bin_edges_fc, eval_df_summary_fc):
     # In case the highest value bins have 0 bad, add the max to the end to make it friendly for pd.qcut
     if num_bin_edges_cc.max()<num_bin_edges_fc.max():
         num_bin_edges_cc = np.append(num_bin_edges_cc[:-1], num_bin_edges_fc.max())
+
+    #avoid min or max missed out from data due to truncation to 4 digit float format
+    num_bin_edges_cc[0] = np.minimum(np.min(s_num), num_bin_edges_cc[0])
+    num_bin_edges_cc[-1] = np.maximum(np.max(s_num), num_bin_edges_cc[-1])
     
     return num_bin_edges_cc
 
@@ -191,6 +208,10 @@ def num_cc_edges_woe_enforce_monotonicity(s_num, target, num_bin_edges, eval_df_
         
     num_bin_edges_cc = np.delete(num_bin_edges, non_monoto_bins['bin_edges_index_to_drop'])
 #     np.array([x for x in num_bin_edges if round(x,4) not in non_monoto_bins['bin_edges_index_to_drop'].values])
+
+    #avoid min or max missed out from data due to truncation to 4 digit float format
+    num_bin_edges_cc[0] = np.minimum(np.min(s_num), num_bin_edges_cc[0])
+    num_bin_edges_cc[-1] = np.maximum(np.max(s_num), num_bin_edges_cc[-1])
     
     print('output bin edges : ', num_bin_edges_cc)
     
@@ -243,6 +264,7 @@ def num_cc(s_num, num_bin_edges_cc):
         904        5. 0.168< - <=0.2
         905        6. 0.2< - <=0.243
     '''
+
     s_interval = pd.cut(s_num, bins=num_bin_edges_cc, duplicates = 'drop')
     num_bins = s_interval.value_counts().shape[0] #sometimes there is a bin with 0 record, have to use value_counts to see it instead of unique
     s_interval_bin_number  = pd.cut(s_num, bins=num_bin_edges_cc, duplicates = 'drop', labels = range(num_bins)).map(lambda x: str(int(x)))
@@ -275,18 +297,44 @@ def cat_cc(s_cat, cat_bin_values, cat_bin_values_groups):
     
     return s_cat_cc, cat_bin_values_cc
 
-def cc_cat_zerobad_lowvolwoesmooth(cat_bin_values, eval_df_summary, min_samples_leaf=20, smoothing=10):
+def cc_cat_zerobad_lowvolwoesmooth(cat_bin_values, eval_df_summary, min_bin_count=20, smoothing=10, min_n_bad = 0.01, desc = '1. Coarseclass smoothe 0 bad bin woe'):
     '''
     Example:
-        eval_df_summary_cc = cc_cat_zerobad_lowvolwoesmooth(cat_bin_values = cat_bin_values_fc, eval_df_summary = eval_df_summary_fc, min_samples_leaf=20, smoothing=10)
+        eval_df_summary_cc = cc_cat_zerobad_lowvolwoesmooth(cat_bin_values = cat_bin_values_fc, \
+        eval_df_summary = eval_df_summary_fc, min_bin_count=20, smoothing=10, min_n_bad = 0.01)
         eval_df_summary_cc
     '''
-    #Assign 0 woe to zero bad bin
-    eval_df_summary.loc[((eval_df_summary['N_bad']==0) & (eval_df_summary['feat_num_index'].isnull())), 'woe'] = 0
-    #Smooth woe for low volume bins (at least 20 observations to be meaningful)
-    eval_df_summary['smoothing_factor'] =   1 / (1 + np.exp(-(eval_df_summary['N_count'] - min_samples_leaf) / smoothing)) 
-    eval_df_summary['woe'] = eval_df_summary['smoothing_factor'] * eval_df_summary['woe']
+    #Assign 0.1 bad to zero bad bin
+    eval_df_summary.loc[((eval_df_summary['N_bad']==0) & (eval_df_summary['feat_num_index'].isnull())), 'N_bad'] = min_n_bad
+    
+    #Recalculate woe iv
+    eval_df_summary['N_count'] = eval_df_summary['N_good'] + eval_df_summary['N_bad']
+    num_good_total = eval_df_summary['N_good'].sum()
+    num_bad_total = eval_df_summary['N_bad'].sum()
 
+    eval_df_summary['dist_good']=eval_df_summary['N_good']/num_good_total
+    eval_df_summary['dist_bad']=eval_df_summary['N_bad']/num_bad_total
+    eval_df_summary['bin_count_perc'] = eval_df_summary['N_count']/(num_good_total + num_bad_total)
+    eval_df_summary['woe'] = np.log(eval_df_summary['dist_good']/eval_df_summary['dist_bad']).replace(np.inf, np.nan)
+    
+    #Smooth woe for low volume bins (at least 20 observations to be meaningful)
+    eval_df_summary['smoothing_factor'] =   1 / (1 + np.exp(-(eval_df_summary['N_count'] - min_bin_count) / smoothing)) 
+    eval_df_summary['woe'] = eval_df_summary['smoothing_factor'] * eval_df_summary['woe']
+    
+    eval_df_summary['logodds'] = np.log(eval_df_summary['N_good']/eval_df_summary['N_bad']).replace(np.inf, np.nan)
+    eval_df_summary['p_bad'] = (eval_df_summary['N_bad']/eval_df_summary['N_count']).replace(np.inf, np.nan)
+    eval_df_summary['iv'] = (eval_df_summary['dist_good']-eval_df_summary['dist_bad'])*eval_df_summary['woe']
+    
+    var_name = eval_df_summary['var'].unique()[0]
+    s_total = eval_df_summary.sum().drop(['feat_num_index', 'woe', 'logodds', 'p_bad', 'var'])
+    s_total.iloc[0] = 'Total'
+    
+    eval_df_summary = eval_df_summary.append(s_total, ignore_index = True)
+    
+    eval_df_summary['var'] = var_name
+    
+    eval_df_summary['desc'] = desc
+    
     return eval_df_summary
 
 def cc_to_woe(s_cc, eval_df_summary_cc):
@@ -317,4 +365,4 @@ def cc_to_woe(s_cc, eval_df_summary_cc):
     print('woe encoding', woe_dict)
     s_cc_woe = s_cc.replace(woe_dict)
     s_cc_woe.name = s_cc.name + '_woe'
-    return s_cc_woe
+    return s_cc_woe, woe_dict
