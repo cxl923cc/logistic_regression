@@ -5,6 +5,17 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib
 
+# Low-level functions for numeric features
+# 1.make fineclass bins (fineclass)
+# 2.make custom bin (general)
+# 3.get bin label (general)
+# 4.build attribute level woe and iv report (general)
+# 5.get woe feature (general)
+
+# Medium-level function for fineclass that uses 1, 3, 4, 5
+
+#################    Low Level Functions ########################
+
 def num_make_fc_bin(raw_feat, num_bin = 20):
     '''
     Given number of bins, equally divide the whole range of raw values of the feature into equal sized bins, 
@@ -19,6 +30,16 @@ def num_make_fc_bin(raw_feat, num_bin = 20):
     
     return feat_fc, bin_cut_offs_fc
 
+def num_make_custom_bin(raw_feat, bin_cut_offs):
+    ''' Given raw feature and a list of bin cut offs, return a Series of bin number
+    params:
+        raw_feat: the raw feature
+        bin_cut_offs: a list of bin cut offs. can be the output of fineclass binning (num_make_bin) or a user-defined list.
+    '''
+    binned_feat = pd.cut(raw_feat, bins = bin_cut_offs, labels=False, include_lowest = True)
+    assert binned_feat.isnull().sum()==0, '{}: Check the values in the input Series. Some value is outside of the range of bin cut offs, \
+                                            and it is not mapped to a bin'.format(raw_feat.name)
+    return binned_feat
 
 def num_get_bin_label(bin_cut_offs):
     '''
@@ -43,7 +64,7 @@ def num_get_bin_label(bin_cut_offs):
 
 def calc_woe_iv(target, feat_input, bin_label_dict, feat_col = 'CNT_CHILDREN', desc = '0.Fineclass', show_plot = True):
     '''
-    Calculate attribute level woe and iv, and feature level iv, return two dataframes - attr_woe_iv and feat_iv
+    Calculate attribute level woe and iv, return a dataframe of attr_woe_iv that is a report of the binned feature
     
     params:
         target: the target Series
@@ -79,10 +100,6 @@ def calc_woe_iv(target, feat_input, bin_label_dict, feat_col = 'CNT_CHILDREN', d
     attr_woe_iv['bin_label'] = attr_woe_iv['feat'].map(bin_label_dict)
     attr_woe_iv['desc'] = desc
 
-    feat_iv = pd.DataFrame({'var' : [feat_col],
-                            'desc' : [desc],
-                            'iv' : [attr_woe_iv['iv'].sum()]})
-
     if show_plot:
         plt.plot(attr_woe_iv['woe'], label='woe', marker = '.')
         plt.title(feat_col + ' iv: {:.4f}'.format(attr_woe_iv['iv'].sum()))
@@ -94,4 +111,36 @@ def calc_woe_iv(target, feat_input, bin_label_dict, feat_col = 'CNT_CHILDREN', d
         plt.legend(loc='upper right')
         plt.show()
 
-    return attr_woe_iv, feat_iv
+    return attr_woe_iv
+
+def get_woe_feat(feat_input, attr_woe_iv):
+    ''' Given the feature and attribute level woe dataframe, return the woe feature
+    params:
+        feat_input: the binned feature can be the output of fineclass binning (num_make_bin) or coarse class binning, or even the original feature.
+        attr_woe_iv: the attribute level woe dataframe for creating the dictionary to map bins to woe
+    '''
+    woe_dict = dict(zip(attr_woe_iv['feat'], attr_woe_iv['woe']))
+    woe_feat = feat_input.map(woe_dict)
+    woe_feat.name = woe_feat.name + '_woe'
+    assert woe_feat.isnull().sum()==0, '{}: Some bins are missing or not matched to woe. Check if there is missing value in the binned feature \
+                                        or the binned feature does not match the values in woe dataframe.'.format(woe_feat.name)
+    return woe_feat
+    
+#################    Medium Level Function ########################
+
+def num_fineclass(df, target, feat_col, num_bin = 20, desc = '0.Fineclass'):
+    ''' Given the name of the feature and number of bins to make, Return a Series of woe and a report about attribute level woe and iv
+        The process is to get bin cut off -> make bin and get bin label -> get attribute level woe -> get woe feature
+    params:
+        df: the dataframe
+        feat_col: the name of the feature column
+        num_bin: the number of bins for groupping the raw feature into equally-sized bins. 20 by default.
+        desc: the description of the binning step used in the report. '0.Fineclass' by default.
+    '''
+    raw_feat = df[feat_col]
+    feat_fc, bin_cut_offs_fc = num_make_fc_bin(raw_feat, num_bin = num_bin)
+    bin_label_dict = num_get_bin_label(bin_cut_offs = bin_cut_offs_fc)
+    attr_woe_iv = calc_woe_iv(target, feat_input = feat_fc, bin_label_dict = bin_label_dict, \
+                                       feat_col = feat_col, desc = desc)
+    woe_feat = get_woe_feat(feat_input = feat_fc, attr_woe_iv = attr_woe_iv)
+    return woe_feat, attr_woe_iv
